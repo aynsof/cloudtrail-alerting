@@ -1,0 +1,223 @@
+---
+Transform: AWS::Serverless-2016-10-31
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Uses CloudTrail and Lambda to alert on any activity outside of approved regions/services.
+
+Parameters:
+
+  TagPrefix:
+    Type: String
+    Description: Enter Prefix that should be used for Tags.
+    Default: 'ct-alerts'
+  EmailSubscriber:
+    Type: String
+    Description: Email to receive SNS alerts.
+  CloudtrailName:
+    Type: String
+    Description: Name of the CloudTrail trail to inspect for activity.
+
+Resources:
+
+### Alert Lambda ###
+
+  AlertLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${TagPrefix}-AlertLambda"
+      Description: Description
+      Handler: lambda_function.lambda_handler
+      Timeout: 60
+      Role: !GetAtt 'AlertLambdaIAMRole.Arn'
+      Runtime: python3.7
+      Environment: 
+        Variables:
+            SNS_TOPIC: !Ref AlertTopic
+
+  AlertLambdaSubscriptionFilter:
+    Type: AWS::Logs::SubscriptionFilter
+    DependsOn:
+      - "AlertLambdaInvokePermission"
+    Properties: 
+      DestinationArn: !GetAtt [AlertLambdaFunction, Arn]
+      FilterPattern: '{ (($.eventName = Put*) || ($.eventName = Delete*) || ($.eventName = Modify*) || ($.eventName = Create*) || ($.eventName = Enable*) || ($.eventName = Disable*) || ($.eventName = Update*) || ($.eventName = Remove*) || ($.eventName = Start*) || ($.eventName = Stop*)) }'
+      LogGroupName: CloudtrailLogGroup
+
+  AlertLambdaInvokePermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !GetAtt "AlertLambdaFunction.Arn"
+      Action: "lambda:InvokeFunction"
+      Principal: "logs.ap-southeast-2.amazonaws.com"
+      SourceArn: !GetAtt CloudtrailLogGroup.Arn
+
+  AlertLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: CloudtrailAlertingLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: LambdaLogging
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - arn:aws:logs:*:*:*
+              - Sid: LambdaSNS
+                Action:
+                  - sns:Publish
+                Effect: Allow
+                Resource: '*'
+
+### Link Lambda ###
+
+  LinkCloudtrailCloudwatchLambda:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt 'LinkLambdaIAMRole.Arn'
+      Runtime: python3.7
+      MemorySize: 128
+      Timeout: 30
+      InlineCode: |
+        import json
+        import boto3
+        import cfnresponse
+
+        def handler(event, context):
+          cloudtrail = boto3.client('cloudtrail')
+          response = cloudtrail.update_trail(
+              Name=event["ResourceProperties"]["CloudtrailName"],
+              CloudWatchLogsLogGroupArn=event["ResourceProperties"]["CloudWatchLogsLogGroupArn"],
+              CloudWatchLogsRoleArn=event["ResourceProperties"]["CloudWatchLogsRoleArn"]
+          )
+
+          responseData = {}
+          responseData['Data'] = 'SUCCESS'
+          cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+
+  LinkCloudtrailCloudwatch:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken:
+        !GetAtt 'LinkCloudtrailCloudwatchLambda.Arn'
+      CloudtrailName: !Ref CloudtrailName
+      CloudWatchLogsLogGroupArn: !GetAtt CloudtrailLogGroup.Arn
+      CloudWatchLogsRoleArn: !GetAtt CloudtrailIAMRole.Arn
+
+  LinkLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: CloudtrailAlertingLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: LambdaLogging
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - arn:aws:logs:*:*:*
+              - Sid: LambdaCloudtrailUpdate
+                Effect: Allow
+                Action:
+                  - cloudtrail:UpdateTrail
+                Resource:
+                  - arn:aws:cloudtrail:*:*:*
+              - Sid: LambdaSNS
+                Action:
+                  - sns:Publish
+                Effect: Allow
+                Resource: '*'
+              - Sid: LambdaALLWARNING
+                Action:
+                  - '*'
+                Effect: Allow
+                Resource: '*'
+
+### Cloudwatch Logs ###
+
+  CloudtrailLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      LogGroupName: CloudtrailLogGroup
+
+  CloudtrailMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties: 
+      FilterPattern: '{ (($.eventName = Put*) || ($.eventName = Delete*) || ($.eventName = Modify*) || ($.eventName = Create*) || ($.eventName = Enable*) || ($.eventName = Disable*) || ($.eventName = Update*) || ($.eventName = Remove*) || ($.eventName = Start*) || ($.eventName = Stop*)) }'
+      LogGroupName: !Ref CloudtrailLogGroup
+      MetricTransformations: 
+        - 
+          MetricValue: "1"
+          MetricNamespace: "Cloudtrail/Alerts"
+          MetricName: "CloudtrailAlerts"
+
+  CloudtrailIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: CloudtrailAlertingLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: CloudtrailLogging
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - arn:aws:logs:*:*:*
+
+### SNS Topic ###
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    DependsOn:
+      - "LinkCloudtrailCloudwatch"   # A nasty hack to fire the Custom Resource
+    Properties: 
+      DisplayName: CloudTrailAlertTopic
+      Subscription: 
+        - 
+          Endpoint: !Ref EmailSubscriber
+          Protocol: email
+      TopicName: CloudTrailAlertTopic
+
+Outputs:
+  LogGroupArn:
+    Description: ARN of the Cloudwatch Log Group
+    Value: !GetAtt [CloudtrailLogGroup, Arn]
+  IAMRoleArn:
+    Description: ARN of the IAM role for the Cloudwatch Log Group
+    Value: !GetAtt [CloudtrailIAMRole, Arn]

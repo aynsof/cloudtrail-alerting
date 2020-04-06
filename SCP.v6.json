@@ -1,0 +1,62 @@
+{
+	"Version": "2012-10-17",
+	"Statement": [
+		{
+			"Sid": "DenyAllOutsideSydneyOregon",
+			"Effect": "Deny",
+			"NotAction": [
+				"iam:*",
+				"kms:CreateGrant",
+				"kms:Describe*",
+				"kms:List*",
+				"sts:*",
+				"sso:*",
+				"s3:List*",
+				"organizations:*",
+				"route53:*",
+				"route53domains:*",
+				"budgets:*",
+				"aws-portal:*",
+				"waf:*",
+				"cloudfront:*",
+				"acm:*",
+				"globalaccelerator:*",
+				"importexport:*",
+				"support:*",
+				"aws-marketplace:*"
+			],
+			"Resource": [
+				"*"
+			],
+			"Condition": {
+				"StringNotEquals": {
+					"aws:RequestedRegion": [
+						"ap-southeast-2",
+						"us-west-2"
+					]
+				}
+			}
+		},
+		{
+			"Sid": "RestrictOregon",
+			"Effect": "Deny",
+			"NotAction": [
+				"ses:*",
+				"s3:*",
+				"sqs:*",
+				"sns:*",
+				"kms:*"
+			],
+			"Resource": [
+				"*"
+			],
+			"Condition": {
+				"StringEquals": {
+					"aws:RequestedRegion": [
+						"us-west-2"
+					]
+				}
+			}
+		}
+	]
+}
